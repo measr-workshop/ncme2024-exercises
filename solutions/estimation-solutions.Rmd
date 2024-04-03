@@ -1,0 +1,160 @@
+---
+title: "Estimating DCMs - Solutions"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include = FALSE}
+library(measr)
+library(dplyr)
+library(fs)
+
+taylor_data <- readRDS("data/taylor-data.rds")
+taylor_qmatrix <- readRDS("data/taylor-qmatrix.rds")
+
+if (!dir_exists("fits")) dir_create("fits")
+```
+
+## Exercise 1
+
+View the MacReady & Dayton (1977) data (`mdm_data` and `mdm_qmatrix`) and the Taylor data (`taylor_data` and `taylor_qmatrix`).
+
+1. How many items are in the data?
+2. How many respondents are in the data?
+3. How many attributes are measured?
+
+```{r}
+# 142 rows = 142 respondents
+# 4 non-ID columns = 4 items
+mdm_data
+
+# 4 rows = 4 items
+# 1 non-ID column = 1 attribute (multiplication)
+mdm_qmatrix
+
+# 502 rows = 502 albums
+# 21 non-ID columns = 21 items
+taylor_data
+
+# 21 rows = 21 items
+# 3 non-ID column = 3 attributes (songwriting, production, vocals)
+taylor_qmatrix
+```
+
+## Exercise 2
+
+Complete the `parameters` and `transformed parameters` blocks for the MDM data.
+
+```{stan output.var="mdm_lcdm", eval = FALSE}
+data {
+  int<lower=1> I;           // # of items
+  int<lower=1> R;           // # of respondents 
+  int<lower=1> A;           // # of attributes
+  int<lower=1> C;           // # of attribute profiles (latent classes) 
+  matrix[R,I] y;            // response matrix
+}
+parameters {
+  simplex[C] Vc;
+  
+  // item parameters
+  real l1_0;
+  real<lower=0> l1_11;
+  real l2_0;
+  real<lower=0> l2_11;
+  real l3_0;
+  real<lower=0> l3_11;
+  real l4_0;
+  real<lower=0> l4_11;
+}
+transformed parameters {
+  matrix[I,C] PImat;
+  
+  PImat[1,1] = inv_logit(l1_0);
+  PImat[1,2] = inv_logit(l1_0 + l1_11);
+  PImat[2,1] = inv_logit(l2_0);
+  PImat[2,2] = inv_logit(l2_0 + l2_11);
+  PImat[3,1] = inv_logit(l3_0);
+  PImat[3,2] = inv_logit(l3_0 + l3_11);
+  PImat[4,1] = inv_logit(l4_0);
+  PImat[4,2] = inv_logit(l4_0 + l4_11);
+}
+model {
+  for (r in 1:R) {
+    real ps[C];
+    for (c in 1:C) {
+      real log_items[I];
+      for (i in 1:I) {
+        log_items[i] = y[r,i] * log(PImat[i,c]) + (1 - y[r,i]) * log(1 - pi[i,c]);
+      }
+      ps[c] = log(Vc[c]) + sum(log_items);
+    }
+    target += log_sum_exp(ps);
+  }
+}
+```
+
+## Exercise 3
+
+Estimate and LCDM on the Taylor data. Your model should have:
+
+* 2 chains
+* 1000 warmup and 500 sampling iterations
+* Use whichever backend you prefer
+
+```{r}
+taylor_lcdm <- measr_dcm(
+  data = taylor_data, qmatrix = taylor_qmatrix,
+  resp_id = "album",
+  type = "lcdm",
+  method = "mcmc", backend = "rstan",
+  warmup = 1000, iter = 1500,
+  chains = 2, cores = 2,
+  file = "fits/taylor-lcdm"
+)
+```
+
+## Exercise 4
+
+What proportion of respondents have mastered both songwriting and vocals in the Taylor data?
+
+What is the probability that *folklore* has mastered vocals?
+
+```{r}
+measr_extract(taylor_lcdm, "strc_param")
+measr_extract(taylor_lcdm, "strc_param") |> 
+  slice(c(6, 8)) |> 
+  summarize(estimate = rvar_sum(estimate))
+
+taylor_lcdm <- add_respondent_estimates(taylor_lcdm)
+measr_extract(taylor_lcdm, "attribute_prob") |> 
+  filter(album == "folklore")
+```
+
+## Exercise 5
+
+Estimate a new LCDM model for the Taylor data with the following priors:
+
+* Intercepts: `normal(-1, 2)`
+  * Except item 3, which should use a `normal(0, 1)` prior
+* Main effects: `lognormal(0, 1)`
+
+Use `backend = "optim"` for a speedier estimation
+
+Extract the prior to see that the specifications were applied
+
+```{r}
+new_taylor <- measr_dcm(
+  data = taylor_data, qmatrix = taylor_qmatrix,
+  resp_id = "album",
+  type = "lcdm",
+  prior = c(prior(normal(-1, 2), class = "intercept"),
+            prior(normal(0, 1), class = "intercept", coef = "l3_0")),
+  method = "optim", backend = "rstan",
+  file = "fits/taylor-new-prior"
+)
+
+measr_extract(new_taylor, "prior")
+```
