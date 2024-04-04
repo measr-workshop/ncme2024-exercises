@@ -1,12 +1,15 @@
 ---
 title: "Estimating DCMs"
-output: html_notebook
+output:
+  html_notebook:
+    df_print: paged
 editor_options: 
   chunk_output_type: inline
 ---
 
 ```{r setup, include = FALSE}
 library(measr)
+library(dplyr)
 library(fs)
 
 taylor_data <- readRDS("data/taylor-data.rds")
